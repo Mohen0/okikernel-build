@@ -470,6 +470,27 @@ jobs:
             # 应用 Droidspaces 容器必须补丁
             wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/fix_sysvipc_kabi_6_7_8.patch
             patch -p1 -F 3 < fix_sysvipc_kabi_6_7_8.patch || true
+            # 禁用模块符号 CRC 校验（Droidspaces 修改 task_struct 后 vendor 模块会因 CRC 不一致拒载，导致开机卡死/反复重启）
+            wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/disable_module_crc_check.patch
+            patch -p1 -F 3 < disable_module_crc_check.patch || true
+            # 补丁目标文件在部分 6.1 源码中位于 kernel/module/main.c 或 kernel/module.c，未生效时用 sed 兜底
+            if ! grep -rq "But ignore" kernel/module/; then
+              echo "::warning::disable_module_crc_check.patch 未干净应用，使用 sed 兜底修改 bad_version 分支"
+              for f in kernel/module/version.c kernel/module/main.c kernel/module.c; do
+                if [ -f "$f" ] && grep -q "bad_version:" "$f"; then
+                  sed -i '/bad_version:/,/return 0;/s/return 0;/return 1;/' "$f"
+                  echo "已在 $f 兜底禁用 CRC 校验"
+                fi
+              done
+            fi
+            if grep -rq "But ignore" kernel/module/ || grep -rA4 "bad_version:" kernel/module/ | grep -q "return 1;"; then
+              echo "模块 CRC 校验禁用已生效"
+            else
+              echo "::warning::模块 CRC 校验禁用未生效，若开机仍异常请检查此步骤日志"
+            fi
+            # 恢复 cgroup 文件前缀兼容（Droidspaces/LXC 容器读写 cgroup 控制文件需要）
+            wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/fix_cgroup.patch
+            patch -p1 -F 3 < fix_cgroup.patch || true
             # 修补 oplus_bsp_midas 行为，避免开机崩溃
             wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/fix_oplus_bsp_midas.patch
             patch -p1 -F 3 < fix_oplus_bsp_midas.patch || true
