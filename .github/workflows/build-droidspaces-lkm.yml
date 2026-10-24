@@ -1,0 +1,115 @@
+name: Droidspaces-LKM 适配构建 (PLF110 原厂内核 6.1.157)
+
+on:
+  workflow_dispatch:
+    inputs:
+      lkm_ref:
+        description: 'Shikochin/Droidspaces-LKM 的 ref (默认 main)'
+        required: false
+        default: 'main'
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 环境准备 + OnePlusOSS 6.1.157 源码与工具链
+        run: |
+          set -e
+          mkdir -p kernel_workspace && cd kernel_workspace
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends binutils python-is-python3 libssl-dev libelf-dev zip unzip >/dev/null
+          echo "下载 OnePlusOSS 6.1.157 内核源码与 vendor 组件..."
+          aria2c -s16 -x16 -k1M -q https://github.com/OnePlusOSS/android_kernel_oneplus_mt6989/archive/refs/heads/oneplus/mt6989_b_16.0.0_ace5_race.zip -o common.zip
+          unzip -q common.zip
+          mv "android_kernel_oneplus_mt6989-oneplus-mt6989_b_16.0.0_ace5_race" common
+          rm -f common.zip
+          aria2c -s16 -x16 -k1M -q https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_mt6989/archive/refs/heads/oneplus/mt6989_b_16.0.0_ace5_race.zip -o vendor.zip
+          unzip -q vendor.zip "android_kernel_modules_and_devicetree_oneplus_mt6989-oneplus-mt6989_b_16.0.0_ace5_race/vendor/*"
+          (cp -rL "android_kernel_modules_and_devicetree_oneplus_mt6989-oneplus-mt6989_b_16.0.0_ace5_race/vendor" ./vendor_tmp 2>/dev/null && mv ./vendor_tmp ./vendor || { rm -rf ./vendor_tmp; cp -r "android_kernel_modules_and_devicetree_oneplus_mt6989-oneplus-mt6989_b_16.0.0_ace5_race/vendor" ./vendor; })
+          rm -rf "android_kernel_modules_and_devicetree_oneplus_mt6989-oneplus-mt6989_b_16.0.0_ace5_race" vendor.zip
+          echo "下载 llvm-Clang20 工具链..."
+          mkdir -p clang20
+          aria2c -s16 -x16 -k1M -q https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/clang-r547379.zip -o clang.zip
+          unzip -q clang.zip -d clang20 && rm -f clang.zip
+          aria2c -s16 -x16 -k1M -q https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/build-tools.zip -o build-tools.zip
+          unzip -q build-tools.zip && rm -f build-tools.zip
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang20/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/linux-x86/bin:$PATH
+          clang --version | head -1
+          # 去除 ABI 保护(仅构建期概念, 运行期无影响), 去除 dirty 后缀
+          rm -f common/android/abi_gki_protected_exports_* || true
+          sed -i 's/ -dirty//g' common/scripts/setlocalversion || true
+
+      - name: 编译原厂配置内核 (产出与原厂一致的 Module.symvers)
+        run: |
+          set -e
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang20/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/linux-x86/bin:$PATH
+          cd kernel_workspace/common
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-Wno-error gki_defconfig
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-Wno-error Image modules 2>&1 | tail -5
+          test -f out/Module.symvers && echo "Module.symvers OK: $(wc -l < out/Module.symvers) 行"
+
+      - name: 克隆 Droidspaces-LKM 并编译 port61 模块
+        run: |
+          set -e
+          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang20/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/linux-x86/bin:$PATH
+          cd $GITHUB_WORKSPACE
+          git clone --depth=1 https://github.com/Shikochin/Droidspaces-LKM.git dlkm
+          cd dlkm
+          git log -1 --format="LKM 源码: %h %s"
+          mkdir -p $GITHUB_WORKSPACE/out-lkm
+          # M= 目录需要 Kbuild 入口, 生成引用主 Makefile 的桩
+          cat > $GITHUB_WORKSPACE/out-lkm/Makefile << 'EOF'
+          include $(src)/Makefile
+          EOF
+          make KDIR=$GITHUB_WORKSPACE/kernel_workspace/common/out \
+               TARGET=namespace PORT_DIR=src/port61 \
+               GKI_ANDROID=android14 GKI_VERSION=6.1 \
+               LLVM=1 ARCH=arm64 \
+               OUT=$GITHUB_WORKSPACE/out-lkm 2>&1 | tail -40
+          find $GITHUB_WORKSPACE/out-lkm -name '*.ko' -ls
+          test -f $GITHUB_WORKSPACE/out-lkm/droidspaces_ns.ko && echo "模块编译成功"
+
+      - name: 打包 KSU/Magisk 模块
+        run: |
+          set -e
+          cd $GITHUB_WORKSPACE
+          cp out-lkm/droidspaces_ns.ko .
+          MODDIR=dlkm_module/droidspaces_lkm_plf110
+          mkdir -p $MODDIR
+          cp out-lkm/droidspaces_ns.ko $MODDIR/
+          cat > $MODDIR/module.prop << 'EOF'
+          id=droidspaces_lkm_plf110
+          name=Droidspaces-LKM for PLF110 stock kernel 6.1.157
+          version=v0.1-adapted
+          versionCode=1
+          author=Mohen0 + Shikochin
+          description=针对一加Ace5竞速版(PLF110)原厂内核 6.1.157-android14-11 的 Droidspaces PID/IPC namespace 模块 (OnePlusOSS 同源编译)
+          EOF
+          cat > $MODDIR/post-fs-data.sh << 'EOF'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          K=$(uname -r)
+          case "$K" in
+            6.1.157-android14-11-*) ;;
+            *) echo "[$(date)] 内核不匹配: $K, 跳过" >> $MODDIR/load.log; exit 0 ;;
+          esac
+          if lsmod 2>/dev/null | grep -q droidspaces_ns; then
+            echo "[$(date)] 已加载" >> $MODDIR/load.log; exit 0
+          fi
+          echo "[$(date)] insmod droidspaces_ns.ko (内核 $K)" >> $MODDIR/load.log
+          insmod $MODDIR/droidspaces_ns.ko >> $MODDIR/load.log 2>&1
+          dmesg | tail -20 >> $MODDIR/load.log 2>&1
+          EOF
+          chmod 755 $MODDIR/post-fs-data.sh
+          cd dlkm_module && zip -qr9 ../Droidspaces-LKM-PLF110-6.1.157.zip . && cd ..
+          ls -la Droidspaces-LKM-PLZ*.zip droidspaces_ns.ko 2>/dev/null || ls -la *.zip *.ko
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidspaces-lkm-plf110
+          path: |
+            droidspaces_ns.ko
+            Droidspaces-LKM-PLF110-6.1.157.zip
