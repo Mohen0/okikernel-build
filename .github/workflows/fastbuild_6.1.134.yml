@@ -467,9 +467,10 @@ jobs:
           if [[ "${{ github.event.inputs.droidspaces_enable }}" != "false" ]]; then
             echo "正在启用 Droidspaces 容器支持..."
             cd kernel_workspace/common
-            # 应用 Droidspaces 容器必须补丁
-            wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/fix_sysvipc_kabi_6_7_8.patch
-            patch -p1 -F 3 < fix_sysvipc_kabi_6_7_8.patch || true
+            # [二分试验 crcfix3: 疑似 sysvipc KABI 保留槽(reserve 6/7/8)与 MT6989 vendor 模块冲突导致内存损坏]
+            # 暂时禁用 sysvipc KABI 补丁与 SYSVIPC/IPC_NS 配置，其余 Droidspaces 项保持不变
+            # wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/fix_sysvipc_kabi_6_7_8.patch
+            # patch -p1 -F 3 < fix_sysvipc_kabi_6_7_8.patch || true
             # 禁用模块符号 CRC 校验（Droidspaces 修改 task_struct 后 vendor 模块会因 CRC 不一致拒载，导致开机卡死/反复重启）
             wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/droidspaces_patch/disable_module_crc_check.patch
             patch -p1 -F 3 < disable_module_crc_check.patch || true
@@ -501,9 +502,10 @@ jobs:
             patch -p1 -F 3 < ntsync_compat_${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
             # 开启 Droidspaces 容器所需内核支持
             echo "CONFIG_PID_NS=y" >> ./arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IPC_NS=y" >> ./arch/arm64/configs/gki_defconfig
+            # [crcfix3 二分: 禁用 SYSVIPC 与 IPC_NS, 其余保留]
+            #echo "CONFIG_IPC_NS=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_USER_NS=y" >> ./arch/arm64/configs/gki_defconfig
-            echo "CONFIG_SYSVIPC=y" >> ./arch/arm64/configs/gki_defconfig
+            #echo "CONFIG_SYSVIPC=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_DEVTMPFS=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_NAMESPACES=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_POSIX_MQUEUE=y" >> ./arch/arm64/configs/gki_defconfig
