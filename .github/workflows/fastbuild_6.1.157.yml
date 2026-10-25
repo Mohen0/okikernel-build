@@ -616,6 +616,7 @@ jobs:
           # 原厂内核字符串伪装：复刻 PLF110 出厂 6.1.157 内核的 /proc/version（build-user@build-host, 2026-07-09）
           export KBUILD_BUILD_USER=build-user
           export KBUILD_BUILD_HOST=build-host
+          export KBUILD_BUILD_VERSION=1
           export KBUILD_BUILD_TIMESTAMP="Thu Jul  9 09:54:38 UTC 2026"
           echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
           
@@ -686,7 +687,7 @@ jobs:
           [ -f "$IMG" ] || { echo "Image 不存在"; exit 1; }
           VER=$(strings "$IMG" | grep -m1 "Linux version")
           echo "BANNER: $VER"
-          echo "$VER" | grep -q '^Linux version 6.1.157-android14-11-o-gc2dad16af736 (build-user@build-host) (Android (10087095, +pgo, +bolt, +lto, -mlgo, based on r487747c) clang version 17.0.2' || { echo "版本串伪装校验失败！"; exit 1; }
+          echo "$VER" | grep -q '^Linux version 6.1.157-android14-11-o-gc2dad16af736 (build-user@build-host) (Android (10087095, +pgo, +bolt, +lto, -mlgo, based on r487747c) clang version 17.0.2 (https://android.googlesource.com/toolchain/llvm-project d9f89f4d16663d5012e5c09495f3b30ece3d2362), LLD 17.0.2) #1 SMP PREEMPT Thu Jul  9 09:54:38 UTC 2026$' || { echo "版本串伪装校验失败！"; exit 1; }
           echo "版本串伪装校验通过"
 
       - name: 保存新的 ccache 缓存
