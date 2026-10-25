@@ -1,0 +1,35 @@
+name: relay-release-asset
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'release tag'
+        required: true
+        type: string
+      asset:
+        description: 'asset 文件名'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载 release 资产并提交回仓库
+        run: |
+          set -e
+          git config --global user.name "relay-bot"
+          git config --global user.email "relay@users.noreply.github.com"
+          git clone --depth 1 "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" repo
+          cd repo
+          mkdir -p relay_out
+          gh release download "${{ inputs.tag }}" --pattern "${{ inputs.asset }}" -D relay_out --repo "${{ github.repository }}"
+          ls -la relay_out/
+          git add relay_out
+          git commit -m "relay: ${{ inputs.asset }} [skip ci]"
+          git push origin HEAD:main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
