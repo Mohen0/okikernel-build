@@ -6,7 +6,7 @@ env:
   KERNEL_VERSION: '6.1'
   SUB_VERSION: '157'
   KERNEL_NAME: 'android14-11-o-g606246250429'
-  CCACHE_KEY: ccache-ecsv5-6.1.157-mt6989
+  CCACHE_KEY: ccache-ecsv5-c17-6.1.157-mt6989
 
 on:
   workflow_dispatch:
@@ -141,11 +141,12 @@ jobs:
           (cp -rL "android_kernel_modules_and_devicetree_oneplus_mt6989-oneplus-mt6989_b_16.0.0_ace5_race/vendor" ./vendor_tmp 2>/dev/null && mv ./vendor_tmp ./vendor || { rm -rf ./vendor_tmp; cp -r "android_kernel_modules_and_devicetree_oneplus_mt6989-oneplus-mt6989_b_16.0.0_ace5_race/vendor" ./vendor; }) &&
           rm -rf "android_kernel_modules_and_devicetree_oneplus_mt6989-oneplus-mt6989_b_16.0.0_ace5_race" vendor.zip &
           
-          echo "正在克隆llvm-Clang20工具链..." &&
-          mkdir -p clang20 &&
-          aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/clang-r547379.zip -o clang.zip &&
-          unzip -q clang.zip -d clang20 &&
-          rm -rf clang.zip &
+          echo "正在克隆llvm-Clang17工具链(原厂同款r487747c,用于/proc/version伪装)..." &&
+          mkdir -p clang17 &&
+          wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz" -O clang17.tgz &&
+          tar -xzf clang17.tgz -C clang17 &&
+          chmod -R +x clang17/bin &&
+          rm -f clang17.tgz &
           
           echo "正在克隆构建工具..." &&
           aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/build-tools.zip -o build-tools.zip &&
@@ -593,9 +594,9 @@ jobs:
         run: |
           WORKDIR="$(pwd)"
           export PATH="/usr/lib/ccache:$PATH"
-          export PATH="$WORKDIR/kernel_workspace/clang20/bin:$PATH"
+          export PATH="$WORKDIR/kernel_workspace/clang17/bin:$PATH"
           export PATH="$WORKDIR/kernel_workspace/build-tools/bin:$PATH"
-          CLANG_DIR="$WORKDIR/kernel_workspace/clang20/bin"
+          CLANG_DIR="$WORKDIR/kernel_workspace/clang17/bin"
           CLANG_VERSION="$($CLANG_DIR/clang --version | head -n 1)"
           LLD_VERSION="$($CLANG_DIR/ld.lld --version | head -n 1)"
           echo "编译器信息:"
@@ -611,6 +612,10 @@ jobs:
           export CCACHE_DIR="${{ env.CCACHE_DIR }}"
           export CCACHE_MAXSIZE="3G"
           export CCACHE_IS_KERNEL_COMPILING="true"
+          # 原厂内核字符串伪装：复刻 PLF110 出厂 6.1.157 内核的 /proc/version（build-user@build-host, 2026-07-09）
+          export KBUILD_BUILD_USER=build-user
+          export KBUILD_BUILD_HOST=build-host
+          export KBUILD_BUILD_TIMESTAMP="Thu Jul  9 09:54:38 UTC 2026"
           echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
           
           cd kernel_workspace/common
