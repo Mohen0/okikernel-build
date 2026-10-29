@@ -5,7 +5,7 @@ env:
   ANDROID_VERSION: 'android14'
   KERNEL_VERSION: '6.1'
   SUB_VERSION: '157'
-  KERNEL_NAME: 'android14-11-o-g606246250429'
+  KERNEL_NAME: 'android14-11-o-gc2dad16af736'          # 真机 uname -r 实测：6.1.157-android14-11-o-gc2dad16af736
   CCACHE_KEY: ccache-ecsv5-spoof-6.1.157-mt6989
 
 on:
@@ -90,6 +90,11 @@ on:
         required: true
         type: boolean
         default: 'false'
+      ksu_version_override:
+        description: '强制指定 KSU 驱动版本号（填管理器显示的 versionCode，如 35252；留空自动 = BakaSU main 提交数 + 30700）'
+        required: false
+        type: string
+        default: ''
       kernel_suffix:
         description: '内核后缀(留空默认,开头别加连字符,勿加空格等影响指令运行的保留字符)'
         required: false
@@ -265,8 +270,24 @@ jobs:
             curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/refs/heads/main/kernel/setup.sh" | bash -s 201884b4
             echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%@cctv18"' >> ./common/arch/arm64/configs/gki_defconfig
             cd ./KernelSU
-            # 生成自定义版本号（基于提交计数）, 失败时使用 114514
-            KSU_VERSION=$(expr $(git rev-list --count main) + 30700 2>/dev/null || echo 114514)
+            # ---- 版本号对齐（驱动版本必须 >= 管理器 versionCode，否则管理器提示“内核版本过旧”）----
+            # 根因：kernel/Kbuild 里 KSU_VERSION = 30000 + rev-list --count HEAD + 700，数的是 HEAD；
+            # 而这里数的是 main。workflow 把 BakaSU 钉在 201884b4（规避上游 #639 与 susfs fake_state 链接冲突），
+            # 该提交比 main 落后 3 个，于是内核算出 35249、管理器是 35252 → 差 3 就报旧。
+            # 修法：算完直接用字面值覆盖 Kbuild 的 KSU_VERSION 定义，两边彻底统一。
+            if [[ -n "${{ github.event.inputs.ksu_version_override }}" ]]; then
+              KSU_VERSION="${{ github.event.inputs.ksu_version_override }}"
+              echo "使用手动指定的版本号：$KSU_VERSION"
+            else
+              KSU_BASE_COUNT=$(git rev-list --count main 2>/dev/null || git rev-list --count HEAD 2>/dev/null || echo 0)
+              KSU_VERSION=$(( KSU_BASE_COUNT + 30700 ))
+              [ "$KSU_BASE_COUNT" -gt 0 ] || KSU_VERSION=114514
+              echo "按 main 提交数计算版本号：$KSU_BASE_COUNT + 30700 = $KSU_VERSION"
+            fi
+            # 覆盖 Kbuild：把 $(shell expr ...) 换成字面值
+            sed -i "s|^KSU_VERSION := .*|KSU_VERSION := ${KSU_VERSION}|" kernel/Kbuild
+            echo '--- Kbuild 版本定义已改写 ---'
+            grep -n '^KSU_VERSION := ' kernel/Kbuild
             # 存储版本号到 GitHub 环境变量
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
@@ -668,6 +689,10 @@ jobs:
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
+          # 强刷 banner 相关目标：version.o/utsname.o 内含 Linux version 字符串，
+          # ccache 开着 file_stat_matches/time_macros 时可能复用改 KERNEL_NAME 之前的旧对象，
+          # 导致 Image 里 banner 与本次不一致（校验就挂在这）。删掉保证重编。
+          rm -f out/init/version.o out/init/utsname.o out/include/generated/utsrelease.h out/include/generated/compile.h &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
           
           # 编译后时间劫持二次校验
@@ -685,10 +710,24 @@ jobs:
           cd kernel_workspace/common
           IMG=out/arch/arm64/boot/Image
           [ -f "$IMG" ] || { echo "Image 不存在"; exit 1; }
-          VER=$(strings "$IMG" | grep -m1 "Linux version")
-          echo "BANNER: $VER"
-          echo "$VER" | grep -q '^Linux version 6.1.157-android14-11-o-gc2dad16af736 (build-user@build-host) (Android (10087095, +pgo, +bolt, +lto, -mlgo, based on r487747c) clang version 17.0.2 (https://android.googlesource.com/toolchain/llvm-project d9f89f4d16663d5012e5c09495f3b30ece3d2362), LLD 17.0.2) #1 SMP PREEMPT Thu Jul  9 09:54:38 UTC 2026$' || { echo "版本串伪装校验失败！"; exit 1; }
-          echo "版本串伪装校验通过"
+          VER=$(strings "$IMG" | grep -m1 '^Linux version')
+          echo "BANNER(实际): $VER"
+          # 期望串全部由 env 拼出，改 KERNEL_NAME / SUB_VERSION 时不用再手改这里，避免二次不一致
+          KS="${{ github.event.inputs.kernel_suffix }}"
+          NAME="${KS:-${{ env.KERNEL_NAME }}}"
+          EXPECT="Linux version ${{ env.KERNEL_VERSION }}.${{ env.SUB_VERSION }}-${NAME} (build-user@build-host) (Android (10087095, +pgo, +bolt, +lto, -mlgo, based on r487747c) clang version 17.0.2 (https://android.googlesource.com/toolchain/llvm-project d9f89f4d16663d5012e5c09495f3b30ece3d2362), LLD 17.0.2) #1 SMP PREEMPT Thu Jul  9 09:54:38 UTC 2026"
+          echo "BANNER(期望): $EXPECT"
+          if printf '%s\n' "$VER" | grep -qxF "$EXPECT"; then
+            echo "版本串伪装校验通过"
+          else
+            echo "::error::版本串伪装校验失败"
+            echo "--- 逐段比对 ---"
+            echo "实际: $VER"
+            echo "期望: $EXPECT"
+            diff <(printf '%s\n' "$VER") <(printf '%s\n' "$EXPECT") || true
+            echo "排查方向：1) KERNEL_NAME 与真机是否一致 2) setlocalversion 是否被 -dirty 污染 3) mkcompile_h 的 KBUILD_BUILD_TIMESTAMP 是否被ccache复用"
+            exit 1
+          fi
 
       - name: 保存新的 ccache 缓存
         if: inputs.ccache_update || steps.ccache-restore.outputs.cache-hit != 'true'
@@ -783,10 +822,13 @@ jobs:
           archive: true
 
       - name: 上传 ZIP 工件
+        if: always()
         uses: actions/upload-artifact@v7
         with:
+          name: ${{ steps.create_zip.outputs.ak3name }}
           path: ${{ github.workspace }}/kernel_workspace/AnyKernel*.zip
           archive: false
+          if-no-files-found: warn
 
   release:
     needs: build
